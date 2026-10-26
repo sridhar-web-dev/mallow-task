@@ -3,10 +3,13 @@
 namespace App\Models;
 
 use App\Enums\BillingCycle;
+use App\Observers\PlanObserver;
+use Illuminate\Database\Eloquent\Attributes\ObservedBy;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
+#[ObservedBy(PlanObserver::class)]
 class Plan extends Model
 {
     use HasFactory;

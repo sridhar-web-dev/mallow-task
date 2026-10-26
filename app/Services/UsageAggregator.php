@@ -16,6 +16,8 @@ use Illuminate\Support\Facades\DB;
  */
 class UsageAggregator
 {
+    public function __construct(private readonly DashboardCache $dashboards) {}
+
     /**
      * Aggregates every customer with usage on $date, in chunks of customer IDs.
      *
@@ -105,5 +107,10 @@ class UsageAggregator
             uniqueBy: ['customer_id', 'usage_date'],
             update: ['total_units', 'event_count', 'updated_at'],
         );
+
+        // New totals mean every affected merchant's cached dashboard is now stale.
+        foreach (array_unique(array_column($rows, 'merchant_id')) as $merchantId) {
+            $this->dashboards->invalidate((int) $merchantId);
+        }
     }
 }

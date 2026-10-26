@@ -51,5 +51,12 @@ class AppServiceProvider extends ServiceProvider
 
             return $limits;
         });
+
+        RateLimiter::for('merchant-reads', function (Request $request) {
+            $merchant = $request->attributes->get(AuthenticateMerchant::ATTRIBUTE);
+
+            return Limit::perMinute(config('billing.dashboard.rate_limit_per_minute'))
+                ->by($merchant ? 'reads:merchant:'.$merchant->id : 'reads:ip:'.$request->ip());
+        });
     }
 }

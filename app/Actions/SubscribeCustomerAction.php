@@ -8,6 +8,7 @@ use App\Models\Customer;
 use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\SubscriptionPlanPeriod;
+use App\Services\DashboardCache;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 
@@ -18,6 +19,8 @@ use Illuminate\Support\Facades\DB;
  */
 class SubscribeCustomerAction
 {
+    public function __construct(private readonly DashboardCache $dashboards) {}
+
     public function execute(Customer $customer, Plan $plan, ?CarbonImmutable $startsOn = null): Subscription
     {
         $startsOn = ($startsOn ?? CarbonImmutable::today())->startOfDay();
@@ -30,7 +33,7 @@ class SubscribeCustomerAction
             throw InvalidSubscriptionChange::planInactive();
         }
 
-        return DB::transaction(function () use ($customer, $plan, $startsOn) {
+        $subscription = DB::transaction(function () use ($customer, $plan, $startsOn) {
             // Lock the customer row so two concurrent subscribe calls cannot both pass the check.
             Customer::query()->lockForUpdate()->find($customer->id);
 
@@ -54,5 +57,10 @@ class SubscribeCustomerAction
 
             return $subscription;
         });
+
+        // After commit, so a dashboard rebuilt straight away sees the new subscription.
+        $this->dashboards->invalidate($customer->merchant_id);
+
+        return $subscription;
     }
 }

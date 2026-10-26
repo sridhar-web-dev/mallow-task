@@ -24,6 +24,21 @@ return [
         'chunk_size' => (int) env('USAGE_AGGREGATION_CHUNK', 1000),
     ],
 
+    'cache' => [
+        // Backstop only. Plan writes through Eloquent invalidate immediately (PlanObserver).
+        'plan_catalog_ttl' => (int) env('PLAN_CATALOG_TTL', 3600),
+        // Dashboard results are also invalidated whenever their inputs change (DashboardCache).
+        'dashboard_ttl' => (int) env('DASHBOARD_CACHE_TTL', 300),
+    ],
+
+    'dashboard' => [
+        'top_customers' => 5,
+        // Flag a customer when this month-to-date usage is below this share of last month's.
+        'churn_drop_threshold_percent' => 50,
+        'churn_list_limit' => 50,
+        'rate_limit_per_minute' => (int) env('DASHBOARD_RATE_LIMIT', 60),
+    ],
+
     'invoicing' => [
         // Due subscriptions read per page when fanning out one billing job per subscription.
         'chunk_size' => (int) env('BILLING_CHUNK', 500),

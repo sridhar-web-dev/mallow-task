@@ -7,6 +7,7 @@ use App\Exceptions\InvalidSubscriptionChange;
 use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\SubscriptionPlanPeriod;
+use App\Services\DashboardCache;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 
@@ -22,12 +23,14 @@ use Illuminate\Support\Facades\DB;
  */
 class ChangeSubscriptionPlanAction
 {
+    public function __construct(private readonly DashboardCache $dashboards) {}
+
     public function execute(Subscription $subscription, Plan $newPlan, ?CarbonImmutable $effectiveOn = null): SubscriptionPlanPeriod
     {
         $today = CarbonImmutable::today();
         $effectiveOn = ($effectiveOn ?? $today)->startOfDay();
 
-        return DB::transaction(function () use ($subscription, $newPlan, $effectiveOn, $today) {
+        $segment = DB::transaction(function () use ($subscription, $newPlan, $effectiveOn, $today) {
             // The same row lock is taken by invoice generation, so a plan change can never
             // interleave with the cycle being billed.
             $subscription = Subscription::query()->lockForUpdate()->findOrFail($subscription->id);
@@ -50,6 +53,11 @@ class ChangeSubscriptionPlanAction
                 SubscriptionPlanPeriod::pricingFrom($newPlan) + ['starts_on' => $effectiveOn]
             );
         });
+
+        // The projected overage depends on the plan segments.
+        $this->dashboards->invalidate($subscription->merchant_id);
+
+        return $segment;
     }
 
     private function guard(
