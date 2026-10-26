@@ -18,4 +18,15 @@ return [
         'late_arrival_days' => (int) env('USAGE_LATE_ARRIVAL_DAYS', 3),
     ],
 
+    'aggregation' => [
+        // Customers rolled up per query and upsert. This bounds memory and statement size
+        // however many customers were active that day.
+        'chunk_size' => (int) env('USAGE_AGGREGATION_CHUNK', 1000),
+    ],
+
+    'invoicing' => [
+        // Due subscriptions read per page when fanning out one billing job per subscription.
+        'chunk_size' => (int) env('BILLING_CHUNK', 500),
+    ],
+
 ];

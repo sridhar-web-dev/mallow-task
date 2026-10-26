@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Casts\DateOnly;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
@@ -21,7 +22,7 @@ class UsageEvent extends Model
     {
         return [
             'quantity' => 'integer',
-            'usage_date' => 'immutable_date',
+            'usage_date' => DateOnly::class,
         ];
     }
 }

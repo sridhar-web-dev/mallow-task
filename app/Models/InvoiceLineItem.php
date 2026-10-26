@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Casts\DateOnly;
 use App\Enums\LineItemType;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -27,8 +28,8 @@ class InvoiceLineItem extends Model
     {
         return [
             'type' => LineItemType::class,
-            'segment_start' => 'immutable_date',
-            'segment_end' => 'immutable_date',
+            'segment_start' => DateOnly::class,
+            'segment_end' => DateOnly::class,
             'quantity' => 'integer',
             'unit_price_micros' => 'integer',
             'amount_minor' => 'integer',

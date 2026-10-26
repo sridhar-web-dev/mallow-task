@@ -11,8 +11,8 @@ use Illuminate\Support\Facades\Schema;
  *  - No foreign keys. Each FK costs a lookup per insert, and MySQL forbids FKs on
  *    partitioned tables. Integrity is checked once in the request layer.
  *  - No updated_at. Rows are immutable, and corrections arrive as new events.
- *  - Only two secondary indexes: the idempotency guard and the aggregation lookup.
- *    Dashboards never read this table; they read daily_usage.
+ *  - Only three secondary indexes: the idempotency guard and the two aggregation access
+ *    paths. Dashboards never read this table; they read daily_usage.
  *
  * See README "Scaling usage_events" for monthly RANGE partitioning on usage_date.
  */
@@ -33,7 +33,10 @@ return new class extends Migration
 
             // Idempotency keys are scoped to a merchant, so two tenants may reuse the same key.
             $table->unique(['merchant_id', 'idempotency_key']);
-            // Used by the daily aggregation job: SUM(quantity) for one customer on one day.
+            // Daily rollup: "every customer with events on day X", read in customer_id order
+            // with keyset pagination. Starts with the date, so it also matches monthly partitions.
+            $table->index(['usage_date', 'customer_id']);
+            // Invoice-time re-aggregation: one customer across the dates of one cycle.
             $table->index(['customer_id', 'usage_date']);
         });
     }

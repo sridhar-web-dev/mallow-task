@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Casts\DateOnly;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -17,7 +18,7 @@ class DailyUsage extends Model
     protected function casts(): array
     {
         return [
-            'usage_date' => 'immutable_date',
+            'usage_date' => DateOnly::class,
             'total_units' => 'integer',
             'event_count' => 'integer',
         ];

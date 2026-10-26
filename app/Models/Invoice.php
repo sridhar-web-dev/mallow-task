@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Casts\DateOnly;
 use App\Enums\InvoiceStatus;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -29,8 +30,8 @@ class Invoice extends Model
     protected function casts(): array
     {
         return [
-            'period_start' => 'immutable_date',
-            'period_end' => 'immutable_date',
+            'period_start' => DateOnly::class,
+            'period_end' => DateOnly::class,
             'base_amount_minor' => 'integer',
             'overage_amount_minor' => 'integer',
             'total_minor' => 'integer',

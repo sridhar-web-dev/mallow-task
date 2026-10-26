@@ -21,6 +21,12 @@ class Plan extends Model
         'is_active',
     ];
 
+    // Matches the column default, so a freshly created model reports itself active
+    // without needing a refresh() from the database.
+    protected $attributes = [
+        'is_active' => true,
+    ];
+
     protected function casts(): array
     {
         return [
