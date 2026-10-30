@@ -115,6 +115,65 @@ class MerchantDashboardTest extends TestCase
             ->assertJsonPath('data.top_customers.customers.1.plan', null);
     }
 
+    public function test_top_customers_show_usage_as_a_share_of_their_prorated_allowance(): void
+    {
+        // Starter since 11 Oct: allowance 5,000 × 21/31 = 3,387. Used 300 × 10 days = 3,000, which is 88.6%.
+        $customer = $this->customer('cus_starter');
+        $this->subscribe($customer, $this->starter, '2026-10-11');
+        $this->daily($customer, '2026-10-11', '2026-10-20', 300);
+        $this->daily($this->customer('cus_unsubscribed'), '2026-10-01', '2026-10-01', 50);
+
+        $this->dashboard()
+            ->assertJsonPath('data.top_customers.customers.0.included_units', 3_387)
+            ->assertJsonPath('data.top_customers.customers.0.percent_of_allowance', 88.6)
+            ->assertJsonPath('data.top_customers.customers.1.included_units', null)
+            ->assertJsonPath('data.top_customers.customers.1.percent_of_allowance', null);
+    }
+
+    // --- Summary cards and trend ----------------------------------------------------------
+
+    public function test_summary_totals_usage_against_allowance_and_names_the_most_subscribed_plan(): void
+    {
+        foreach (['cus_a', 'cus_b'] as $ref) {
+            $customer = $this->customer($ref);
+            $this->subscribe($customer, $this->pro, '2026-10-01');
+            $this->daily($customer, '2026-10-01', '2026-10-10', 100);
+        }
+        $starter = $this->customer('cus_c');
+        $this->subscribe($starter, $this->starter, '2026-10-01');
+        // Usage from last month is outside the current cycle.
+        $this->daily($starter, '2026-09-28', '2026-09-28', 9_999);
+
+        $this->dashboard()
+            ->assertJsonPath('data.summary.active_subscriptions', 3)
+            ->assertJsonPath('data.summary.cycle_used_units', 2_000)
+            ->assertJsonPath('data.summary.cycle_included_units', 25_000) // 10,000 + 10,000 + 5,000
+            ->assertJsonPath('data.summary.most_subscribed_plan', ['name' => 'Pro', 'billing_cycle' => 'monthly', 'subscriptions' => 2]);
+    }
+
+    public function test_daily_trend_covers_30_days_with_gaps_filled(): void
+    {
+        $customer = $this->customer('cus_a');
+        $this->daily($customer, '2026-10-20', '2026-10-20', 70);
+        $this->daily($this->customer('cus_b'), '2026-10-20', '2026-10-20', 30);
+        $this->daily($customer, '2026-09-20', '2026-09-20', 999); // 31 days ago, outside the window
+
+        $trend = $this->dashboard()->json('data.daily_trend');
+
+        $this->assertCount(30, $trend);
+        $this->assertSame(['date' => '2026-09-21', 'units' => 0], $trend[0]);
+        $this->assertSame(['date' => '2026-10-20', 'units' => 100], $trend[29]);
+    }
+
+    public function test_the_merchant_endpoint_identifies_the_api_keys_merchant(): void
+    {
+        $this->getJson('/api/merchant', ['Authorization' => 'Bearer '.$this->apiKey])
+            ->assertOk()
+            ->assertJsonPath('data.id', $this->merchant->id)
+            ->assertJsonPath('data.currency', $this->merchant->currency)
+            ->assertJsonMissingPath('data.api_key_hash');
+    }
+
     // --- Projected overage -------------------------------------------------------------
 
     public function test_projected_overage_extrapolates_each_subscription_to_cycle_end(): void

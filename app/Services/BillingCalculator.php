@@ -57,7 +57,7 @@ class BillingCalculator
                 planPeriodId: $segment->planPeriodId,
             );
 
-            $allowance = Money::roundDiv($segment->includedUnits * $days, $cycleDays);
+            $allowance = $this->allowanceFor($segment, $covered);
             $used = $this->usageWithin($covered, $dailyUsage);
             $overageUnits = max(0, $used - $allowance);
 
@@ -81,6 +81,31 @@ class BillingCalculator
         }
 
         return new InvoiceDraft($period, $lines);
+    }
+
+    /**
+     * Total prorated allowance across the segments covering $period. This is the same
+     * figure each overage line is measured against, exposed for "% of allowance" displays.
+     *
+     * @param  list<PlanSegment>  $segments
+     */
+    public function includedUnits(DateRange $period, array $segments): int
+    {
+        $total = 0;
+
+        foreach ($segments as $segment) {
+            $covered = $segment->coverageOf($period);
+            $total += $covered === null ? 0 : $this->allowanceFor($segment, $covered);
+        }
+
+        return $total;
+    }
+
+    private function allowanceFor(PlanSegment $segment, DateRange $covered): int
+    {
+        $cycleDays = $segment->billingCycle->periodContaining($covered->start)->days();
+
+        return Money::roundDiv($segment->includedUnits * $covered->days(), $cycleDays);
     }
 
     /**

@@ -52,6 +52,8 @@ class DemoSeederTest extends TestCase
         ])->assertOk();
 
         $this->assertCount(5, $response->json('data.top_customers.customers'));
+        // Regression: the rollup used to be stamped with the last back-dated action's clock.
+        $this->assertStringStartsWith($today, $response->json('data.summary.usage_aggregated_at'));
         $this->assertGreaterThan(0, $response->json('data.projected_overage.projected_minor'));
 
         // The other demo merchant's key cannot read Acme's dashboard.

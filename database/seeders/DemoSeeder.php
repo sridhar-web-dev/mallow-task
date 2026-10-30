@@ -63,13 +63,13 @@ class DemoSeeder extends Seeder
         $callerNow = Carbon::getTestNow();
 
         try {
-            $this->seedAsOf(CarbonImmutable::today());
+            $this->seedAsOf(CarbonImmutable::today(), $callerNow);
         } finally {
             Carbon::setTestNow($callerNow);
         }
     }
 
-    private function seedAsOf(CarbonImmutable $today): void
+    private function seedAsOf(CarbonImmutable $today, mixed $callerNow): void
     {
         $this->today = $today;
         $this->historyStart = $this->today->subMonthsNoOverflow(2)->startOfMonth();
@@ -88,6 +88,10 @@ class DemoSeeder extends Seeder
             $this->subscribe($customer, $globexPlan, $this->historyStart);
             $customers[] = ['customer' => $customer, 'profile' => 'steady', 'from' => $this->historyStart];
         }
+
+        // History is in place: back to the present clock, so the rollup and
+        // created timestamps read as "now" rather than as the last back-dated action.
+        Carbon::setTestNow($callerNow);
 
         $events = $this->usage($customers);
         $this->rollUp();

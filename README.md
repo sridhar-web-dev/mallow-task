@@ -8,8 +8,8 @@ high volume, and at each cycle end the system issues an invoice of **base price 
 | | |
 |---|---|
 | **Stack** | PHP 8.2, Laravel 12, MySQL 8 / MariaDB 10.4+, database queue & cache (Redis-ready) |
-| **Tests** | 85 tests / 245 assertions: PHPUnit, in-memory SQLite |
-| **Entry points** | `POST /api/usage`, `GET /api/merchants/{id}/dashboard`, `GET /api/plans`, `usage:aggregate`, `billing:run` |
+| **Tests** | 91 tests / 274 assertions: PHPUnit, in-memory SQLite |
+| **Entry points** | `/dashboard` (UI), `POST /api/usage`, `GET /api/merchants/{id}/dashboard`, `GET /api/merchant`, `GET /api/plans`, `usage:aggregate`, `billing:run` |
 
 ---
 
@@ -75,7 +75,10 @@ php artisan queue:work
 php artisan schedule:work
 ```
 
-Try it:
+Open **http://127.0.0.1:8000/dashboard** and click **Use demo key (Acme)**. That button only appears
+when `APP_ENV=local`. The page follows the brief's wireframe (§2, *Dashboard page*).
+
+Or use the API directly:
 
 ```bash
 curl -s http://127.0.0.1:8000/api/merchants/1/dashboard -H "Authorization: Bearer mk_demo_acme_local_only_0000000000000000"
@@ -131,11 +134,18 @@ Real output from the demo seed as of 26 Oct 2026 (lists trimmed):
 {
   "data": {
     "merchant_id": 1, "currency": "INR", "as_of": "2026-10-26",
+    "summary": {                     // headline cards, across active subscriptions' current cycles
+      "active_subscriptions": 24,
+      "cycle_used_units": 230189,
+      "cycle_included_units": 359320,  // sum of prorated allowances
+      "most_subscribed_plan": { "name": "Growth", "billing_cycle": "monthly", "subscriptions": 12 },
+      "usage_aggregated_at": "2026-10-26 13:07:34"
+    },
     "top_customers": {               // top 5 by usage, 1st of month to today
       "period": { "start": "2026-10-01", "end": "2026-10-26" },
       "customers": [
-        { "customer_id": 15, "external_ref": "cus_015", "name": "Stroman-Torphy", "plan": "Scale",  "units": 23103 },
-        { "customer_id": 13, "external_ref": "cus_013", "name": "Rath Group",     "plan": "Growth", "units": 21537 }
+        { "customer_id": 13, "external_ref": "cus_013", "name": "Rath Group", "plan": "Growth",
+          "units": 21537, "included_units": 15000, "percent_of_allowance": 143.6 }
       ]
     },
     "projected_overage": {           // per subscription, for its cycle containing today
@@ -151,16 +161,42 @@ Real output from the demo seed as of 26 Oct 2026 (lists trimmed):
         { "customer_id": 19, "external_ref": "cus_019", "name": "Lubowitz, Dare and Morissette",
           "previous_units": 13164, "current_units": 1873, "drop_percent": 85.8 }
       ]
-    }
+    },
+    "daily_trend": [                 // merchant-wide units per day, last 30 days, gaps filled with 0
+      { "date": "2026-10-25", "units": 6115 }, { "date": "2026-10-26", "units": 9680 }
+    ]
   }
 }
 ```
 
-All money is in **minor units** (paise), so `4085440` is ₹40,854.40.
+All money is in **minor units** (paise), so `4085440` is ₹40,854.40. `percent_of_allowance` is
+measured against the customer's **prorated** allowance for the current cycle, using the same figure the
+invoice's overage line uses (`BillingCalculator::includedUnits`).
+
+### `GET /api/merchant`
+
+The merchant that the API key belongs to (`id`, `name`, `slug`, `currency`). This lets a client holding only
+a key discover its merchant id.
 
 ### `GET /api/plans`
 
 The merchant's active plans, served from the cached plan catalogue (§7).
+
+### Dashboard page (`/dashboard`)
+
+A server-rendered Blade page laid out like the brief's wireframe:
+- three headline cards (current cycle usage, projected overage revenue, most subscribed plan);
+- the top 5 table with a **% of allowance** meter (orange when over);
+- the 30-day trend chart, the churn-risk panel, and a system-status panel showing the live cache,
+  queue and rate-limit configuration.
+
+It is a **thin client over the JSON API**: no numbers are computed in the view, so everything on screen
+is covered by the API tests. Implementation details:
+- It has no build step (inline CSS, vanilla JS, an SVG chart), so it runs without `npm`.
+- The API key is kept in `sessionStorage` and sent only as a Bearer header, never in the URL.
+- Merchant-supplied names are rendered with `textContent`, never `innerHTML`, so a customer name
+  cannot inject markup.
+- The layout collapses to one column on phones.
 
 ### Console
 
@@ -444,7 +480,11 @@ The brief invites judgement calls. These are the ones I made:
     the end of the cycle containing today. Today's partial usage makes early-day projections slightly
     conservative.
 13. **Idempotency keys are per merchant** and permanent (not expiring) while events live in a single table.
-14. **Merchants authenticate with API keys.** There is no merchant/admin UI or user auth in scope. Plans and
+14. **The wireframe's "Active Plan" card** shows the **most subscribed plan** (with its share of
+    subscriptions). A merchant offers several plans, so "the" active plan is ambiguous at merchant level.
+    The card's "Current Cycle Usage" totals usage against the sum of prorated allowances across
+    active subscriptions.
+15. **Merchants authenticate with API keys.** There is no merchant/admin UI or user auth in scope. Plans and
     subscriptions are managed through actions (used by the seeder and tests). HTTP endpoints for them are listed under §11.
 
 ---
@@ -475,7 +515,7 @@ The brief invites judgement calls. These are the ones I made:
 - **Observability:** metrics on ingest rate, rollup lag and invoices issued; alert when the rollup
   falls behind the late window.
 - **Laravel Horizon** on Redis for queue visibility; separate queues for ingestion, rollup and billing.
-- **A dashboard UI** for the wireframe (the brief evaluates the backend, so this was deprioritised).
+- **Dashboard UI:** drill-down to a customer's invoices and segments, and date-range selection for the trend.
 
 ---
 
@@ -485,7 +525,7 @@ The brief invites judgement calls. These are the ones I made:
 php artisan test
 ```
 
-85 tests run against in-memory SQLite (`phpunit.xml`), in about 20s.
+91 tests run against in-memory SQLite (`phpunit.xml`), in about 30s.
 
 | Suite | Covers |
 |---|---|
@@ -494,8 +534,9 @@ php artisan test
 | `Feature/Billing/UsageAggregationTest` | Per-customer daily sums, idempotent re-runs, late events, keyset chunking (incl. exact multiples), job and command |
 | `Feature/Billing/InvoiceGenerationTest` | End-to-end proration, upgrade/downgrade invoices, late-window timing, no double invoicing, catch-up of missed cycles, plan-price edits not affecting in-flight cycles, plan-change guards |
 | `Feature/Caching/PlanCatalogTest` | Cache hits (zero queries), invalidation on create/update/delete, per-merchant scope, **after-commit** invalidation, `/api/plans` |
-| `Feature/Api/MerchantDashboardTest` | Top 5, projections (incl. across a plan change), churn thresholds and clipped spans, access control, cache invalidation by rollup and plan rename |
-| `Feature/DemoSeederTest` | The demo seed on a mid-month day, the 1st, a leap 29 Feb and 31 Dec |
+| `Feature/Api/MerchantDashboardTest` | Top 5 with % of prorated allowance, summary cards, 30-day trend with gap filling, projections (incl. across a plan change), churn thresholds and clipped spans, access control, `/api/merchant`, cache invalidation by rollup and plan rename |
+| `Feature/DashboardPageTest` | `/` redirect, all wireframe panels render, demo-key shortcut only when local |
+| `Feature/DemoSeederTest` | The demo seed on a mid-month day, the 1st, a leap 29 Feb and 31 Dec, with a fresh rollup timestamp |
 
 The expected amounts in the billing tests are worked out by hand in comments next to each assertion.
 
@@ -503,7 +544,7 @@ The expected amounts in the billing tests are worked out by hand in comments nex
 - the `date` cast storing midnight timestamps, which broke SQLite boundary comparisons;
 - a plan created without `is_active` reading as inactive in memory;
 - the rate limiter running before authentication, so it could never key by merchant;
-- the seeder resetting the caller's clock.
+- the seeder resetting the caller's clock, and stamping the rollup with a back-dated clock.
 
 ---
 

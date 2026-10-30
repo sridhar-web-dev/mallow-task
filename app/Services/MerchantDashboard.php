@@ -39,17 +39,82 @@ class MerchantDashboard
     {
         $today = $today->startOfDay();
 
-        return $this->cache->remember($merchant->id, $today, fn () => [
-            'merchant_id' => $merchant->id,
-            'currency' => $merchant->currency,
-            'as_of' => $today->toDateString(),
-            'top_customers' => $this->topCustomers($merchant->id, $today),
-            'projected_overage' => $this->projectedOverage($merchant->id, $today),
-            'churn_risk' => $this->churnRisk($merchant->id, $today),
-        ]);
+        return $this->cache->remember($merchant->id, $today, function () use ($merchant, $today) {
+            $subscriptions = $this->subscriptionStats($merchant->id, $today);
+
+            return [
+                'merchant_id' => $merchant->id,
+                'currency' => $merchant->currency,
+                'as_of' => $today->toDateString(),
+                'summary' => $this->summary($merchant->id, $today, $subscriptions),
+                'top_customers' => $this->topCustomers($merchant->id, $today, $subscriptions),
+                'projected_overage' => [
+                    'actual_to_date_minor' => array_sum(array_column($subscriptions, 'actual_overage_minor')),
+                    'projected_minor' => array_sum(array_column($subscriptions, 'projected_overage_minor')),
+                    'subscriptions_projected_over_allowance' => count(array_filter(array_column($subscriptions, 'projected_overage_minor'))),
+                ],
+                'churn_risk' => $this->churnRisk($merchant->id, $today),
+                'daily_trend' => $this->dailyTrend($merchant->id, $today),
+            ];
+        });
     }
 
-    private function topCustomers(int $merchantId, CarbonImmutable $today): array
+    /**
+     * Headline cards: usage against allowance across every active subscription's current cycle,
+     * the most-subscribed plan, and how fresh the rollup is.
+     *
+     * @param  array<int, array>  $subscriptions
+     */
+    private function summary(int $merchantId, CarbonImmutable $today, array $subscriptions): array
+    {
+        $planCounts = array_count_values(array_column($subscriptions, 'plan_id'));
+        arsort($planCounts);
+        $topPlan = $this->plans->find($merchantId, (int) array_key_first($planCounts));
+
+        return [
+            'active_subscriptions' => count($subscriptions),
+            'cycle_used_units' => array_sum(array_column($subscriptions, 'used_units')),
+            'cycle_included_units' => array_sum(array_column($subscriptions, 'included_units')),
+            'most_subscribed_plan' => $topPlan === null ? null : [
+                'name' => $topPlan->name,
+                'billing_cycle' => $topPlan->billingCycle->value,
+                'subscriptions' => $planCounts[$topPlan->id],
+            ],
+            // Bounded to the last week so it stays an index range scan however much history there is.
+            'usage_aggregated_at' => DB::table('daily_usage')
+                ->where('merchant_id', $merchantId)
+                ->where('usage_date', '>=', $today->subDays(7)->toDateString())
+                ->max('updated_at'),
+        ];
+    }
+
+    /**
+     * Merchant-wide units per day for the last 30 days, with gaps filled with zeros so the chart
+     * x-axis is continuous.
+     */
+    private function dailyTrend(int $merchantId, CarbonImmutable $today): array
+    {
+        $range = new DateRange($today->subDays(29), $today);
+
+        $totals = DB::table('daily_usage')
+            ->where('merchant_id', $merchantId)
+            ->whereBetween('usage_date', [$range->start->toDateString(), $range->end->toDateString()])
+            ->groupBy('usage_date')
+            ->selectRaw('usage_date, SUM(total_units) AS units')
+            ->pluck('units', 'usage_date');
+
+        $days = [];
+        for ($day = $range->start; $day->lte($range->end); $day = $day->addDay()) {
+            $days[] = ['date' => $day->toDateString(), 'units' => (int) ($totals[$day->toDateString()] ?? 0)];
+        }
+
+        return $days;
+    }
+
+    /**
+     * @param  array<int, array>  $subscriptions  stats keyed by customer_id
+     */
+    private function topCustomers(int $merchantId, CarbonImmutable $today, array $subscriptions): array
     {
         $month = new DateRange($today->startOfMonth(), $today);
 
@@ -64,51 +129,47 @@ class MerchantDashboard
             ->selectRaw('daily_usage.customer_id, customers.external_ref, customers.name, SUM(daily_usage.total_units) AS units')
             ->get();
 
-        $planIds = $this->currentPlanIds($rows->pluck('customer_id'));
         $catalog = $this->plans->forMerchant($merchantId);
 
         return [
             'period' => ['start' => $month->start->toDateString(), 'end' => $month->end->toDateString()],
-            'customers' => $rows->map(fn ($row) => [
-                'customer_id' => (int) $row->customer_id,
-                'external_ref' => $row->external_ref,
-                'name' => $row->name,
-                'plan' => $catalog->get($planIds[$row->customer_id] ?? null)?->name,
-                'units' => (int) $row->units,
-            ])->all(),
+            'customers' => $rows->map(function ($row) use ($catalog, $subscriptions) {
+                $stats = $subscriptions[$row->customer_id] ?? null;
+                $included = $stats['included_units'] ?? null;
+
+                return [
+                    'customer_id' => (int) $row->customer_id,
+                    'external_ref' => $row->external_ref,
+                    'name' => $row->name,
+                    'plan' => $catalog->get($stats['plan_id'] ?? null)?->name,
+                    'units' => (int) $row->units,
+                    // Against the prorated allowance of the customer's current cycle (null if not subscribed).
+                    'included_units' => $included,
+                    'percent_of_allowance' => $included ? round(100 * $row->units / $included, 1) : null,
+                ];
+            })->all(),
         ];
     }
 
     /**
-     * @return array<int, int> customer_id => plan_id of their open plan segment
+     * One pass over the merchant's active subscriptions, pricing each one's cycle containing
+     * today twice with the invoicing calculator: once on actual usage and once with usage
+     * extrapolated to cycle end.
+     *
+     * Chunked so the database work stays flat for merchants with many subscribers: each chunk
+     * loads its segments and daily usage in two queries, with no N+1. The result keeps one
+     * small array per subscription.
+     *
+     * @return array<int, array{plan_id: int, included_units: int, used_units: int, actual_overage_minor: int, projected_overage_minor: int}> keyed by customer_id
      */
-    private function currentPlanIds(Collection $customerIds): array
+    private function subscriptionStats(int $merchantId, CarbonImmutable $today): array
     {
-        if ($customerIds->isEmpty()) {
-            return [];
-        }
+        $stats = [];
 
-        return DB::table('subscription_plan_periods')
-            ->join('subscriptions', 'subscriptions.id', '=', 'subscription_plan_periods.subscription_id')
-            ->whereIn('subscriptions.customer_id', $customerIds)
-            ->where('subscriptions.status', SubscriptionStatus::Active->value)
-            ->whereNull('subscription_plan_periods.ends_on')
-            ->pluck('subscription_plan_periods.plan_id', 'subscriptions.customer_id')
-            ->all();
-    }
-
-    private function projectedOverage(int $merchantId, CarbonImmutable $today): array
-    {
-        $actualMinor = 0;
-        $projectedMinor = 0;
-        $subscriptionsOver = 0;
-
-        // Chunked so memory stays flat for merchants with many subscribers. Each chunk loads its
-        // segments and daily usage in two queries, with no N+1.
         Subscription::query()
             ->where('merchant_id', $merchantId)
             ->where('status', SubscriptionStatus::Active)
-            ->chunkById(500, function (Collection $subscriptions) use ($today, &$actualMinor, &$projectedMinor, &$subscriptionsOver) {
+            ->chunkById(500, function (Collection $subscriptions) use ($today, &$stats) {
                 $segments = SubscriptionPlanPeriod::query()
                     ->with('plan')
                     ->whereIn('subscription_id', $subscriptions->modelKeys())
@@ -124,23 +185,24 @@ class MerchantDashboard
 
                 foreach ($cycles as $subscriptionId => $cycle) {
                     $subscription = $subscriptions->find($subscriptionId);
-                    $planSegments = $segments->get($subscriptionId)->map(fn ($p) => PlanSegment::fromModel($p))->all();
+                    $periods = $segments->get($subscriptionId);
+                    $planSegments = $periods->map(fn ($p) => PlanSegment::fromModel($p))->all();
                     $actualUsage = $usage[$subscription->customer_id] ?? [];
 
                     $actual = $this->calculator->calculate($cycle, $planSegments, $actualUsage);
                     $projected = $this->calculator->calculate($cycle, $planSegments, $this->extrapolate($cycle, $today, $actualUsage));
 
-                    $actualMinor += $actual->overageMinor();
-                    $projectedMinor += $projected->overageMinor();
-                    $subscriptionsOver += $projected->overageMinor() > 0 ? 1 : 0;
+                    $stats[$subscription->customer_id] = [
+                        'plan_id' => $periods->firstWhere('ends_on', null)->plan_id,
+                        'included_units' => $this->calculator->includedUnits($cycle, $planSegments),
+                        'used_units' => array_sum(array_filter($actualUsage, fn ($date) => $cycle->contains($date), ARRAY_FILTER_USE_KEY)),
+                        'actual_overage_minor' => $actual->overageMinor(),
+                        'projected_overage_minor' => $projected->overageMinor(),
+                    ];
                 }
             });
 
-        return [
-            'actual_to_date_minor' => $actualMinor,
-            'projected_minor' => $projectedMinor,
-            'subscriptions_projected_over_allowance' => $subscriptionsOver,
-        ];
+        return $stats;
     }
 
     /**
